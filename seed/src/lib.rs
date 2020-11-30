@@ -24,7 +24,7 @@ use librad::{
     net::{
         discovery,
         gossip,
-        gossip::types::PeerInfo,
+        gossip::PeerInfo,
         peer::{self, PeerApi, PeerConfig},
         protocol::ProtocolEvent,
     },
@@ -250,7 +250,6 @@ impl Node {
             ProtocolEvent::Listening(addr) => {
                 transmit.send(Event::Listening(addr)).await.ok();
             },
-            ProtocolEvent::Membership(_) => {},
         }
         Ok(())
     }
@@ -259,7 +258,7 @@ impl Node {
     async fn track_project(
         api: &PeerApi<Signer>,
         urn: &RadUrn,
-        peer_info: &PeerInfo<std::net::IpAddr>,
+        peer_info: &PeerInfo<std::net::SocketAddr>,
     ) -> Result<(), Error> {
         let peer_id = peer_info.peer_id;
         let url = urn.clone().into_rad_url(peer_id);
@@ -267,12 +266,7 @@ impl Node {
             path: uri::Path::new(),
             ..urn.clone()
         };
-        let port = peer_info.advertised_info.listen_port;
-        let addr_hints = peer_info
-            .seen_addrs
-            .iter()
-            .map(|a: &std::net::IpAddr| (*a, port).into())
-            .collect::<Vec<_>>();
+        let addr_hints = peer_info.seen_addrs.clone();
 
         // Track unconditionally.
         {

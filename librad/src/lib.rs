@@ -10,6 +10,7 @@
 #![feature(core_intrinsics)]
 #![feature(ip)]
 #![feature(never_type)]
+#![feature(try_trait)]
 
 #[macro_use]
 extern crate async_trait;
@@ -35,6 +36,7 @@ pub mod signer;
 pub mod uri;
 
 // Re-exports
+pub use peer::PeerId;
 pub use radicle_macros::*;
 
 #[cfg(test)]

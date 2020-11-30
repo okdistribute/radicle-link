@@ -7,12 +7,12 @@
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt::Debug,
     future::Future,
     io,
     iter,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     pin::Pin,
     sync::{
         atomic::{self, AtomicUsize},
@@ -39,7 +39,7 @@ use crate::{
     internal::channel::Fanout,
     net::{
         codec::CborCodecError,
-        connection::{Closable, CloseReason, LocalInfo, RemoteInfo, Stream},
+        connection::{Closable, CloseReason, Duplex as _, LocalInfo, RemoteInfo, RemotePeer as _},
         conntrack,
         gossip,
         quic,
@@ -53,8 +53,7 @@ pub enum ProtocolEvent<A> {
     Connected(PeerId),
     Disconnecting(PeerId),
     Listening(SocketAddr),
-    Gossip(gossip::Info<IpAddr, A>),
-    Membership(gossip::MembershipInfo<IpAddr>),
+    Gossip(gossip::Info<SocketAddr, A>),
 }
 
 /// Unification of the different inputs the run loop processes.
@@ -74,7 +73,7 @@ enum Run<'a, A> {
     },
 
     Gossip {
-        event: gossip::ProtocolEvent<IpAddr, A>,
+        event: gossip::ProtocolEvent<SocketAddr, A>,
     },
 }
 
@@ -112,7 +111,7 @@ pub enum Error {
 pub type RunLoop = BoxFuture<'static, ()>;
 
 pub struct Protocol<S, A> {
-    gossip: gossip::Protocol<S, A, IpAddr, quic::RecvStream, quic::SendStream>,
+    gossip: gossip::Protocol<S, A, SocketAddr, quic::BidiStream>,
     git: GitServer,
 
     endpoint: quic::Endpoint,
@@ -160,7 +159,7 @@ impl<S, A> Drop for Protocol<S, A> {
         );
         match r {
             Ok(x) | Err(x) if x == 0 => {
-                tracing::trace!("`net::Protocol` refcount is zero");
+                tracing::warn!("shutting down endpoint");
                 self.endpoint.shutdown()
             },
             _ => {},
@@ -174,7 +173,7 @@ where
     for<'de> A: Encode + Decode<'de> + Clone + Debug + Send + Sync + 'static,
 {
     pub fn new<Disco>(
-        gossip: gossip::Protocol<S, A, IpAddr, quic::RecvStream, quic::SendStream>,
+        gossip: gossip::Protocol<S, A, SocketAddr, quic::BidiStream>,
         git: GitServer,
         quic::BoundEndpoint { endpoint, incoming }: quic::BoundEndpoint<'static>,
         disco: Disco,
@@ -392,13 +391,9 @@ where
                         };
                         let conn = match conn {
                             Some(conn) => Some(conn),
-                            None =>
-                            // TODO: track connection once conntrack is sane
-                            {
-                                connect_peer_info(&self.endpoint, to)
-                                    .await
-                                    .map(|(conn, _)| conn)
-                            },
+                            None => connect_peer_info(&self.endpoint, to)
+                                .await
+                                .map(|(conn, _)| conn),
                         };
 
                         match conn {
@@ -427,6 +422,7 @@ where
                         };
                         match conn {
                             None => {
+                                tracing::info!("no matching connection to {}", to.peer_id);
                                 let conn = connect_peer_info(&self.endpoint, to).await;
                                 if let Some((conn, incoming)) = conn {
                                     self.handle_connect(conn, incoming, None).await
@@ -434,6 +430,7 @@ where
                             },
 
                             Some(conn) => {
+                                tracing::info!("reusing existing connection to {}", to.peer_id);
                                 match conn.open_bidi().await {
                                     Ok(stream) => {
                                         // The incoming future should still be
@@ -452,14 +449,24 @@ where
                             },
                         }
                     },
+
+                    gossip::Control::Disconnect { peer } => {
+                        tracing::trace!(remote.id = %peer, "Run::Rad(Disconnect)");
+
+                        let conn = {
+                            let connections = self.connections.read().unwrap();
+                            connections.get(&peer).map(Clone::clone)
+                        };
+
+                        if let Some(conn) = conn {
+                            tracing::info!("disconnecting {}", peer);
+                            conn.close(CloseReason::ProtocolDisconnect);
+                        }
+                    },
                 },
 
                 gossip::ProtocolEvent::Info(info) => {
                     self.subscribers.emit(ProtocolEvent::Gossip(info)).await
-                },
-
-                gossip::ProtocolEvent::Membership(info) => {
-                    self.subscribers.emit(ProtocolEvent::Membership(info)).await
                 },
             },
         }
@@ -469,13 +476,16 @@ where
         &'a self,
         conn: quic::Connection,
         incoming: quic::IncomingStreams<'a>,
-        hello: impl Into<Option<gossip::Rpc<IpAddr, A>>>,
+        hello: impl Into<Option<gossip::Rpc<SocketAddr, A>>>,
     ) {
         let remote_id = conn.remote_peer_id();
         tracing::info!(remote.id = %remote_id, "new outgoing connection");
 
         {
             let mut connections = self.connections.write().unwrap();
+            let _prev = connections.insert(conn.clone());
+            debug_assert!(_prev.is_none());
+            /*
             if let Some(prev) = connections.insert(conn.clone()) {
                 tracing::warn!(
                     "new outgoing ejects previous connection to {} @ {}",
@@ -485,6 +495,7 @@ where
                 drop(connections);
                 prev.close(CloseReason::DuplicateConnection);
             }
+            */
         }
 
         self.subscribers
@@ -610,7 +621,7 @@ where
     async fn outgoing_bidi(
         &self,
         stream: quic::BidiStream,
-        hello: impl Into<Option<gossip::Rpc<IpAddr, A>>>,
+        hello: impl Into<Option<gossip::Rpc<SocketAddr, A>>>,
     ) -> Result<(), Error> {
         match upgrade(stream, upgrade::Gossip).await {
             Err(upgrade::Error { stream, source }) => {
@@ -722,12 +733,15 @@ where
 
 async fn connect_peer_info<'a>(
     endpoint: &quic::Endpoint,
-    peer_info: gossip::PeerInfo<IpAddr>,
+    peer_info: gossip::PeerInfo<SocketAddr>,
 ) -> Option<(quic::Connection, quic::IncomingStreams<'a>)> {
-    let advertised_port = peer_info.advertised_info.listen_port;
-    let addrs = iter::once(peer_info.advertised_info.listen_addr)
-        .chain(peer_info.seen_addrs)
-        .map(move |ip| SocketAddr::new(ip, advertised_port));
+    let advertised_port = peer_info.advertised_info.listen_addr.port();
+    let addrs = iter::once(peer_info.advertised_info.listen_addr).chain(
+        peer_info
+            .seen_addrs
+            .into_iter()
+            .flat_map(|addr| vec![addr, SocketAddr::new(addr.ip(), advertised_port)]),
+    );
     connect(endpoint, peer_info.peer_id, addrs).await
 }
 
@@ -744,7 +758,7 @@ where
         !(ip.is_unspecified() || ip.is_documentation() || ip.is_multicast())
     }
 
-    let addrs = addrs.into_iter().filter(routable).collect::<Vec<_>>();
+    let addrs = addrs.into_iter().filter(routable).collect::<BTreeSet<_>>();
     if addrs.is_empty() {
         tracing::warn!("no routable addrs for {}", peer_id);
         None

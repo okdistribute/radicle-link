@@ -20,7 +20,6 @@ use librad::{
     keys::SecretKey,
     net::{
         discovery,
-        gossip,
         peer::{Gossip, Peer, PeerApi, PeerConfig},
         protocol::ProtocolEvent,
     },
@@ -34,7 +33,7 @@ lazy_static! {
 }
 
 pub struct TestPeer {
-    _tmp: TempDir,
+    pub _tmp: TempDir,
     pub peer: Peer<SecretKey>,
     pub key: SecretKey,
 }
@@ -53,7 +52,7 @@ impl AsRef<Peer<SecretKey>> for TestPeer {
     }
 }
 
-async fn boot(seeds: Vec<(PeerId, SocketAddr)>) -> anyhow::Result<TestPeer> {
+pub async fn boot(seeds: Vec<(PeerId, SocketAddr)>) -> anyhow::Result<TestPeer> {
     let tmp = tempdir()?;
     let paths = Paths::from_root(tmp.path())?;
     let key = SecretKey::new();
@@ -167,20 +166,13 @@ where
         return;
     }
 
-    let min_joined = min_connected - 1;
-
     stream::select_all(events)
-        .scan((0, 0), |(connected, joined), event| {
-            match event {
-                ProtocolEvent::Connected(_) => *connected += 1,
-                ProtocolEvent::Membership(ref info) => match info {
-                    gossip::MembershipInfo::Join { .. } => *joined += 1,
-                    gossip::MembershipInfo::Neighbour(_) => *joined += 1,
-                },
-                _ => (),
-            };
+        .scan(0, |connected, event| {
+            if let ProtocolEvent::Connected(_) = event {
+                *connected += 1;
+            }
 
-            future::ready(if *connected < min_connected || *joined < min_joined {
+            future::ready(if *connected < min_connected {
                 Some(event)
             } else {
                 None

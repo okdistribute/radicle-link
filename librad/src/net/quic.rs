@@ -19,7 +19,16 @@ use keystore::sign;
 use crate::{
     keys::AsPKCS8,
     net::{
-        connection::{self, CloseReason, LocalInfo, RemoteInfo},
+        connection::{
+            Closable,
+            CloseReason,
+            Duplex,
+            HasStableId,
+            LocalInfo,
+            LocalPeer,
+            RemoteInfo,
+            RemotePeer,
+        },
         tls,
     },
     peer::{self, PeerId},
@@ -127,12 +136,14 @@ impl Endpoint {
     }
 }
 
-impl LocalInfo for Endpoint {
-    type Addr = SocketAddr;
-
+impl LocalPeer for Endpoint {
     fn local_peer_id(&self) -> PeerId {
         self.peer_id
     }
+}
+
+impl LocalInfo for Endpoint {
+    type Addr = SocketAddr;
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         self.endpoint.local_addr()
@@ -233,12 +244,14 @@ pub struct BoundEndpoint<'a> {
     pub incoming: BoxStream<'a, (Connection, IncomingStreams<'a>)>,
 }
 
-impl<'a> LocalInfo for BoundEndpoint<'a> {
-    type Addr = SocketAddr;
-
+impl<'a> LocalPeer for BoundEndpoint<'a> {
     fn local_peer_id(&self) -> PeerId {
         self.endpoint.local_peer_id()
     }
+}
+
+impl<'a> LocalInfo for BoundEndpoint<'a> {
+    type Addr = SocketAddr;
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         self.endpoint.local_addr()
@@ -295,19 +308,29 @@ impl Connection {
     }
 }
 
-impl RemoteInfo for Connection {
-    type Addr = SocketAddr;
-
+impl RemotePeer for Connection {
     fn remote_peer_id(&self) -> PeerId {
         self.peer
     }
+}
+
+impl RemoteInfo for Connection {
+    type Addr = SocketAddr;
 
     fn remote_addr(&self) -> SocketAddr {
         self.conn.remote_address()
     }
 }
 
-impl connection::Closable for Connection {
+impl HasStableId for Connection {
+    type Id = usize;
+
+    fn stable_id(&self) -> Self::Id {
+        self.stable_id()
+    }
+}
+
+impl Closable for Connection {
     fn close(self, reason: CloseReason) {
         self.close(reason)
     }
@@ -339,19 +362,29 @@ impl BidiStream {
     }
 }
 
-impl RemoteInfo for BidiStream {
-    type Addr = SocketAddr;
-
+impl RemotePeer for BidiStream {
     fn remote_peer_id(&self) -> PeerId {
         self.conn.remote_peer_id()
     }
+}
+
+impl RemoteInfo for BidiStream {
+    type Addr = SocketAddr;
 
     fn remote_addr(&self) -> SocketAddr {
         self.conn.remote_addr()
     }
 }
 
-impl connection::Stream for BidiStream {
+impl HasStableId for BidiStream {
+    type Id = quinn::StreamId;
+
+    fn stable_id(&self) -> Self::Id {
+        self.id()
+    }
+}
+
+impl Duplex for BidiStream {
     type Read = RecvStream;
     type Write = SendStream;
 
@@ -360,7 +393,7 @@ impl connection::Stream for BidiStream {
     }
 }
 
-impl connection::Closable for BidiStream {
+impl Closable for BidiStream {
     fn close(self, reason: CloseReason) {
         self.close(reason)
     }
@@ -405,19 +438,29 @@ impl RecvStream {
     }
 }
 
-impl RemoteInfo for RecvStream {
-    type Addr = SocketAddr;
-
+impl RemotePeer for RecvStream {
     fn remote_peer_id(&self) -> PeerId {
         self.conn.remote_peer_id()
     }
+}
+
+impl RemoteInfo for RecvStream {
+    type Addr = SocketAddr;
 
     fn remote_addr(&self) -> SocketAddr {
         self.conn.remote_addr()
     }
 }
 
-impl connection::Closable for RecvStream {
+impl HasStableId for RecvStream {
+    type Id = quinn::StreamId;
+
+    fn stable_id(&self) -> Self::Id {
+        self.id()
+    }
+}
+
+impl Closable for RecvStream {
     fn close(self, reason: CloseReason) {
         self.close(reason)
     }
@@ -448,19 +491,29 @@ impl SendStream {
     }
 }
 
-impl RemoteInfo for SendStream {
-    type Addr = SocketAddr;
-
+impl RemotePeer for SendStream {
     fn remote_peer_id(&self) -> PeerId {
         self.conn.remote_peer_id()
     }
+}
+
+impl RemoteInfo for SendStream {
+    type Addr = SocketAddr;
 
     fn remote_addr(&self) -> SocketAddr {
         self.conn.remote_addr()
     }
 }
 
-impl connection::Closable for SendStream {
+impl HasStableId for SendStream {
+    type Id = quinn::StreamId;
+
+    fn stable_id(&self) -> Self::Id {
+        self.id()
+    }
+}
+
+impl Closable for SendStream {
     fn close(self, reason: CloseReason) {
         self.close(reason)
     }

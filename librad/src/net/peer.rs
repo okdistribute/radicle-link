@@ -7,7 +7,7 @@ use std::{
     convert::TryFrom,
     future::Future,
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     ops::Deref,
     sync::Arc,
     time::Duration,
@@ -226,7 +226,7 @@ where
         &self,
         urn: RadUrn,
         timeout: Duration,
-    ) -> impl Future<Output = impl futures::Stream<Item = PeerInfo<IpAddr>>> {
+    ) -> impl Future<Output = impl futures::Stream<Item = PeerInfo<SocketAddr>>> {
         let span = tracing::trace_span!("PeerApi::providers", urn = %urn);
         let protocol = self.protocol.clone();
         let target_urn = urn.clone();
@@ -366,7 +366,7 @@ where
 
         let gossip = gossip::Protocol::new(
             peer_id,
-            gossip::PeerAdvertisement::new(listen_addr.ip(), listen_addr.port()),
+            gossip::PeerAdvertisement::new(listen_addr),
             config.gossip_params,
             peer_storage,
         );
